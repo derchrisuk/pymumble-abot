@@ -15,7 +15,12 @@ import collections
 
 from thrd_party import pymumble
 import pyaudio
+
 __version__ = "0.0.9"
+PCS = pymumble.callbacks.PYMUMBLE_CLBK_SOUNDRECEIVED
+CHUNK = 1024
+
+pa = pyaudio.PyAudio()
 
 class Status(collections.UserList):
     def __init__(self, runner_obj):
@@ -84,7 +89,18 @@ class Runner(collections.UserDict):
 
 class MumbleRunner(Runner):
     def __init__(self, mumble_object, args_dict):
+        print(args_dict)
         self.mumble = mumble_object
+        self.stream = pa.open(input=True,
+                           output=True,
+                           channels=1,
+                           format=pyaudio.paInt16,
+                           rate=pymumble.constants.PYMUMBLE_SAMPLERATE,
+                           input_device_index=args_dict['input_device_index'],
+                           output_device_index=args_dict['output_device_index'],
+                           frames_per_buffer=CHUNK)
+        self.mumble.set_receive_sound(1)
+        self.mumble.callbacks.set_callback(PCS, self.sound_received_handler)
         super().__init__(self._config(), args_dict)
 
     def _config(self):
@@ -104,6 +120,10 @@ class Audio(MumbleRunner):
         except KeyError:
             self["vol_vector"] = 1
 
+    def sound_received_handler(self, user, soundchunk):
+        """ play sound received from mumble server upon its arrival """
+        self.stream.write(soundchunk.pcm)
+
 
     def __output_loop(self, periodsize):
         """ TODO """
@@ -112,14 +132,8 @@ class Audio(MumbleRunner):
 
     def __input_loop(self, periodsize):
         """ TODO """
-        p_in = pyaudio.PyAudio()
-        stream = p_in.open(input=True,
-                           channels=1,
-                           format=pyaudio.paInt16,
-                           rate=pymumble.constants.PYMUMBLE_SAMPLERATE,
-                           frames_per_buffer=periodsize)
         while True:
-            data = stream.read(periodsize)
+            data = self.stream.read(periodsize)
             self.mumble.sound_output.add_sound(data)
         stream.close()
         return True
@@ -171,10 +185,10 @@ def prepare_mumble(host, user, password="", certfile=None,
 def main(preserve_thread=True):
     """swallows parameter. TODO: move functionality away"""
     parser = argparse.ArgumentParser(description='Alsa input to mumble')
-    parser.add_argument("-H", "--host", dest="host", type=str, required=True,
+    parser.add_argument("-H", "--host", dest="host", type=str, 
                         help="A hostame of a mumble server")
 
-    parser.add_argument("-u", "--user", dest="user", type=str, required=True,
+    parser.add_argument("-u", "--user", dest="user", type=str, 
                         help="Username you wish, Default=abot")
 
     parser.add_argument("-p", "--password", dest="password", type=str, default="",
@@ -195,28 +209,80 @@ def main(preserve_thread=True):
     parser.add_argument("-f", "--fifo", dest="fifo_path", type=str, default=None,
                         help="Read from FIFO (EXPERMENTAL)")
 
+    parser.add_argument("--list-devices", dest="list_devices", action="store_true",
+                        help="List output devices")
+
+    parser.add_argument("--input", dest="input", type=str, default=None,
+                        help="Input device")
+
+    parser.add_argument("--output", dest="output", type=str, default=None,
+                        help="Output device")
+
     args = parser.parse_args()
 
+    input_device_index = None
+    output_device_index = None
+
+    if args.list_devices:
+        for i in range(pa.get_device_count()):
+            dev = pa.get_device_info_by_index(i)
+            input_chn = dev.get('maxInputChannels', 0)
+            output_chn = dev.get('maxInputChannels', 0)
+            if input_chn > 0 or output_chn > 0:
+                name = dev.get('name')
+                rate = dev.get('defaultSampleRate')
+                print("Index {i}: {name} (Max inputs {input_chn}, Max output {output_chn}, Default @ {rate} Hz)".format(
+                    i=i, name=name, input_chn=input_chn, output_chn=output_chn, rate=int(rate)
+
+                ))
+        default_in = pa.get_default_input_device_info()
+        default_out = pa.get_default_output_device_info()
+        print("Default input: {name}".format(name=default_in.get('name')))
+        print("Default output: {name}".format(name=default_out.get('name')))
+        sys.exit()
+
+    if args.input:
+        for i in range(pa.get_device_count()):
+            dev = pa.get_device_info_by_index(i)
+            if dev.get('name') == args.input:
+                input_device_index = i
+                break
+        if input_device_index is None:
+            print("Device not found: {name}".format(name = args.input))
+            sys.exit()
+
+    if args.output:
+        for i in range(pa.get_device_count()):
+            dev = pa.get_device_info_by_index(i)
+            if dev.get('name') == args.output:
+                output_device_index = i
+                break
+        if output_device_index is None:
+            print("Device not found: {name}".format(name = args.ouput))
+            sys.exit()
 
     abot = prepare_mumble(args.host, args.user, args.password, args.certfile,
                           "audio", args.bandwidth, args.channel)
+
     if args.fifo_path:
-        audio = AudioPipe(abot, {"output": {"args": (args.periodsize, ),
+        client = AudioPipe(abot, {"output": {"args": (args.periodsize, ),
                                             "kwargs": None},
                                  "input": {"args": (args.periodsize, args.fifo_path),
                                            "kwargs": None}
                                 }
                          )
     else:
-        audio = Audio(abot, {"output": {"args": (args.periodsize, ),
+        client = Audio(abot, {"output": {"args": (args.periodsize, ),
                                         "kwargs": None},
                              "input": {"args": (args.periodsize, ),
-                                       "kwargs": None}
+                                       "kwargs": None},
+                              "input_device_index": input_device_index,
+                              "output_device_index": output_device_index
                             }
                      )
     if preserve_thread:
         while True:
-            print(audio.status())
+            print(client.status())
             sleep(60)
 
 if __name__ == "__main__":
