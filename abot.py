@@ -18,7 +18,7 @@ import pyaudio
 
 __version__ = "0.0.9"
 PCS = pymumble.callbacks.PYMUMBLE_CLBK_SOUNDRECEIVED
-CHUNK = 1024
+CHUNK = 128
 
 pa = pyaudio.PyAudio()
 
@@ -92,13 +92,18 @@ class MumbleRunner(Runner):
         print(args_dict)
         self.mumble = mumble_object
         self.stream = pa.open(input=True,
-                           output=True,
                            channels=1,
                            format=pyaudio.paInt16,
                            rate=pymumble.constants.PYMUMBLE_SAMPLERATE,
                            input_device_index=args_dict['input_device_index'],
+                           frames_per_buffer=CHUNK)
+        self.streamOut = pa.open(output=True,
+                           channels=1,
+                           format=pyaudio.paInt16,
+                           rate=pymumble.constants.PYMUMBLE_SAMPLERATE,
                            output_device_index=args_dict['output_device_index'],
                            frames_per_buffer=CHUNK)
+        self.streamOut.start_stream()
         self.mumble.set_receive_sound(1)
         self.mumble.callbacks.set_callback(PCS, self.sound_received_handler)
         super().__init__(self._config(), args_dict)
@@ -122,20 +127,22 @@ class Audio(MumbleRunner):
 
     def sound_received_handler(self, user, soundchunk):
         """ play sound received from mumble server upon its arrival """
-        self.stream.write(soundchunk.pcm)
-
+        self.streamOut.write(soundchunk.pcm)
 
     def __output_loop(self, periodsize):
         """ TODO """
+        print("period: %i", periodsize)
         del periodsize
         return None
 
     def __input_loop(self, periodsize):
         """ TODO """
+        self.stream.start_stream()
         while True:
             data = self.stream.read(periodsize)
             self.mumble.sound_output.add_sound(data)
-        stream.close()
+        self.stream.stop_stream()
+        self.stream.close()
         return True
 
     def input_vol(self, dbint):
@@ -228,7 +235,7 @@ def main(preserve_thread=True):
             dev = pa.get_device_info_by_index(i)
             input_chn = dev.get('maxInputChannels', 0)
             output_chn = dev.get('maxInputChannels', 0)
-            if input_chn > 0 or output_chn > 0:
+            if True or input_chn > 0 or output_chn > 0:
                 name = dev.get('name')
                 rate = dev.get('defaultSampleRate')
                 print("Index {i}: {name} (Max inputs {input_chn}, Max output {output_chn}, Default @ {rate} Hz)".format(
