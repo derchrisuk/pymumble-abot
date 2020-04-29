@@ -1,0 +1,10 @@
+[Unit]
+Description=Mumble Bot for using Android as virtual Soundcard
+After=mumble-server.service
+
+[Service]
+Type=simple
+ExecStart=/srv/pymumble-abot/abot.py --output "Loopback: PCM (hw:1,1)"  --input "Loopback: PCM (hw:0,1)"  --host localhost  --user rhasspy  -s 10 --vad=3
+
+[Install]
+WantedBy=multi-user.target
