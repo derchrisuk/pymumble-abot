@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/python3
 """
 TITLE:  abot
 AUTHOR: Ranomier (ranomier@fragomat.net)
@@ -113,8 +113,9 @@ class MumbleRunner(Runner):
         else:
             self.vad = None
         super().__init__(self._config(),
-                         {"output": {"args": (), "kwargs": None},
-                          "input": {"args": (),"kwargs": None} })
+                         {"mumble-output": {"args": (), "kwargs": None},
+                          "sound-input": {"args": (),"kwargs": None},
+                          "sound-output": {"args": (),"kwargs": None} })
 
     def _config(self):
         raise NotImplementedError("please inherit and implement")
@@ -124,12 +125,14 @@ class Audio(MumbleRunner):
     def __init__(self, mumble_object, args):
         super().__init__(mumble_object, args)
         self.received_queue = queue.Queue()
+        self.sound_input_queue = queue.Queue()
         self.null_buffer = array.array('h', [0] * self.chunksize)
         self.run()
 
     def _config(self):
-        return {"input": {"func": self.__input_loop, "process": None},
-                "output": {"func": self.__output_loop, "process": None}}
+        return {"mumble-output": {"func": self.__mumble_output_loop, "process": None},
+                "sound-input": {"func": self.__sound_input_loop, "process": None},
+                "sound-output": {"func": self.__sound_output_loop, "process": None}}
 
     def calculate_volume(self, thread_name):
         """ TODO """
@@ -143,7 +146,7 @@ class Audio(MumbleRunner):
         """ play sound received from mumble server upon its arrival """
         self.received_queue.put(soundchunk)
 
-    def __output_loop(self):
+    def __sound_output_loop(self):
         """ TODO """
         self.stream_out.start_stream()
         null_counter = -1
@@ -166,15 +169,22 @@ class Audio(MumbleRunner):
         self.stream_out.close()
         return True
 
-    def __input_loop(self):
+    def __sound_input_loop(self):
         """ TODO """
         self.stream_in.start_stream()
         while True:
             data = self.stream_in.read(self.chunksize, exception_on_overflow = False)
-            if not self.vad or self.vad.is_speech(data, pymumble.constants.PYMUMBLE_SAMPLERATE):
-                self.mumble.sound_output.add_sound(data)
+            self.sound_input_queue.put(data)
         self.stream_in.stop_stream()
         self.stream_in.close()
+        return True
+
+    def __mumble_output_loop(self):
+        """ TODO """
+        while True:
+            data = self.sound_input_queue.get();
+            if not self.vad or self.vad.is_speech(data, pymumble.constants.PYMUMBLE_SAMPLERATE):
+                self.mumble.sound_output.add_sound(data)
         return True
 
     def input_vol(self, dbint):
