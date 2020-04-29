@@ -170,7 +170,7 @@ class Audio(MumbleRunner):
         """ TODO """
         self.stream_in.start_stream()
         while True:
-            data = self.stream_in.read(self.chunksize)
+            data = self.stream_in.read(self.chunksize, exception_on_overflow = False)
             if not self.vad or self.vad.is_speech(data, pymumble.constants.PYMUMBLE_SAMPLERATE):
                 self.mumble.sound_output.add_sound(data)
         self.stream_in.stop_stream()
