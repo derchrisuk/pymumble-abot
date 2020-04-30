@@ -5,7 +5,7 @@ After=mumble-server.service
 [Service]
 Type=simple
 WorkingDirectory=/srv/pymumble-abot
-ExecStart=/srv/pymumble-abot/abot.py --output "Loopback: PCM (hw:1,1)"  --input "Loopback: PCM (hw:0,0)"  --host localhost  --user rhasspy  -s 20 --vad=3
+ExecStart=/srv/pymumble-abot/abot.py --output "Loopback: PCM (hw:1,1)"  --input "Loopback: PCM (hw:0,0)"  --host localhost  --user rhasspy  -s 20 --vad=3 --vad-latency 3
 
 [Install]
 WantedBy=default.target

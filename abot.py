@@ -21,7 +21,6 @@ import pyaudio
 
 __version__ = "0.0.9"
 PCS = pymumble.callbacks.PYMUMBLE_CLBK_SOUNDRECEIVED
-NULL_MAX = 100 # maximum number of null-chunks to pay if no audio available
 
 pa = pyaudio.PyAudio()
 
@@ -93,23 +92,28 @@ class MumbleRunner(Runner):
     def __init__(self, mumble_object, args):
         print(args)
         self.mumble = mumble_object
-        self.chunksize = int(pymumble.constants.PYMUMBLE_SAMPLERATE * args.periodsize / 1000);
+        self.rate = pymumble.constants.PYMUMBLE_SAMPLERATE
+        self.periodsize = args.periodsize
+        self.chunkSize = int(self.rate * self.periodsize / 1000);
         self.stream_in = pa.open(input=True,
+                                 start=False,
                                  channels=1,
                                  format=pyaudio.paInt16,
-                                 rate=pymumble.constants.PYMUMBLE_SAMPLERATE,
+                                 rate=self.rate,
                                  input_device_index=args.input_device_index,
-                                 frames_per_buffer=self.chunksize)
+                                 frames_per_buffer=self.chunkSize)
         self.stream_out = pa.open(output=True,
+                                  start=False,
                                   channels=1,
                                   format=pyaudio.paInt16,
-                                  rate=pymumble.constants.PYMUMBLE_SAMPLERATE,
+                                  rate=self.rate,
                                   output_device_index=args.output_device_index,
-                                  frames_per_buffer=self.chunksize)
+                                  frames_per_buffer=self.chunkSize)
         self.mumble.set_receive_sound(1)
         self.mumble.callbacks.set_callback(PCS, self.sound_received_handler)
         if args.vad >= 0:
             self.vad = webrtcvad.Vad(args.vad)
+            self.numVadFrames = int(self.rate * args.vadLatency / self.chunkSize) # keep audio running for this many frames
         else:
             self.vad = None
         super().__init__(self._config(),
@@ -126,7 +130,6 @@ class Audio(MumbleRunner):
         super().__init__(mumble_object, args)
         self.received_queue = queue.Queue()
         self.sound_input_queue = queue.Queue()
-        self.null_buffer = array.array('h', [0] * self.chunksize)
         self.run()
 
     def _config(self):
@@ -134,36 +137,34 @@ class Audio(MumbleRunner):
                 "sound-input": {"func": self.__sound_input_loop, "process": None},
                 "sound-output": {"func": self.__sound_output_loop, "process": None}}
 
-    def calculate_volume(self, thread_name):
-        """ TODO """
-        try:
-            dbel = self[thread_name]["db"]
-            self["vol_vector"] = 10 ** (dbel/20)
-        except KeyError:
-            self["vol_vector"] = 1
-
     def sound_received_handler(self, user, soundchunk):
         """ play sound received from mumble server upon its arrival """
         self.received_queue.put(soundchunk)
 
     def __sound_output_loop(self):
         """ TODO """
+        # keep the stream running with zero-data for some time
+        nullBuffer = array.array('h', [0] * self.chunkSize)
+        nullSeconds = 0.25
+        nullChunks = int(self.rate * nullSeconds / self.chunkSize)
+        nullCounter = -1
         self.stream_out.start_stream()
-        null_counter = -1
         while True:
-            if null_counter == -1:
+            if nullCounter == -1:
+                # blocking input until we get something
                 data = self.received_queue.get().pcm
+                nullCounter = nullChunks
                 self.stream_out.start_stream()
-                null_counter = 0
             else:
+                # non-blocking input until we stop the stream after some amount of silence
                 try:
                     data = self.received_queue.get(False).pcm
                 except queue.Empty:
-                    data = self.null_buffer.tobytes()
-                    null_counter += 1
+                    data = self.nullBuffer.tobytes()
+                    nullCounter -= 1
             self.stream_out.write(data)
-            if null_counter >= NULL_MAX:
-                null_counter = -1
+            if nullCounter == 0:
+                nullCounter = -1
                 self.stream_out.stop_stream()
         self.stream_out.stop_stream()
         self.stream_out.close()
@@ -173,22 +174,29 @@ class Audio(MumbleRunner):
         """ TODO """
         self.stream_in.start_stream()
         while True:
-            data = self.stream_in.read(self.chunksize, exception_on_overflow = False)
-            self.sound_input_queue.put(data)
+            self.sound_input_queue.put(self.stream_in.read(self.chunkSize, exception_on_overflow = False))
         self.stream_in.stop_stream()
         self.stream_in.close()
         return True
 
     def __mumble_output_loop(self):
         """ TODO """
-        while True:
-            data = self.sound_input_queue.get();
-            if not self.vad or self.vad.is_speech(data, pymumble.constants.PYMUMBLE_SAMPLERATE):
+        keepRunningFrams = 0
+        if self.vad:
+            keepRunningFrams = 0
+            while True:
+                data = self.sound_input_queue.get();
+                if self.vad.is_speech(data, self.rate):
+                    self.mumble.sound_output.add_sound(data)
+                    keepRuningFrames = self.numVadFrames
+                elif keepRunningFrams > 0:
+                    self.mumble.sound_output.add_sound(data)
+                    keepRunningFrames -= 1
+        else:
+            while True:
+                data = self.sound_input_queue.get();
                 self.mumble.sound_output.add_sound(data)
         return True
-
-    def input_vol(self, dbint):
-        pass
 
 class AudioPipe(MumbleRunner):
     def __init__(self, mumble_object, args):
@@ -206,14 +214,10 @@ class AudioPipe(MumbleRunner):
         while True:
             with open(self.path) as fifo_fd:
                 while True:
-                    data = fifo_fd.read(self.chunksize)
+                    data = fifo_fd.read(self.chunkSize)
                     if not self.vad or self.vad.is_speech(data, pymumble.constants.PYMUMBLE_SAMPLERATE):
                         self.mumble.sound_output.add_sound(data)
         return True
-
-
-class Parser(MumbleRunner):
-    pass
 
 def prepare_mumble(host, user, password="", certfile=None,
                    codec_profile="audio", bandwidth=96000, channel=None):
@@ -236,7 +240,6 @@ def prepare_mumble(host, user, password="", certfile=None,
             sys.exit(1)
     return abot
 
-
 def main(preserve_thread=True):
     """swallows parameter. TODO: move functionality away"""
     parser = argparse.ArgumentParser(description='Alsa input to mumble')
@@ -250,7 +253,13 @@ def main(preserve_thread=True):
                         help="Password if server requires one")
 
     parser.add_argument("--vad", dest="vad", type=int, default=0,
-                        help="User webrtcvad for void recognition.")
+                        help="""Use webrtcvad for void recognition. The argument ranges between 0 and 3
+and controls the aggressiveness of the underlying webrtcvad machine where
+0 is least aggressive and 3 most""")
+
+    parser.add_argument("--vad-latency", dest="vadLatency", type=int, default=2,
+                        help="""After speech is detected auto samples continue to be
+transferred for this many seconds in order to stabilize the connection""")
 
     parser.add_argument("-s", "--setperiod", dest="periodsize", type=int, default=20,
                         help="Length in ms of the sound packages send to the server. Lower values mean less delay. When using vad the length must be 10, 20 or 30ms.")
