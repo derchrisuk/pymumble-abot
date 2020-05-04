@@ -13,16 +13,27 @@ import collections
 import queue
 import array
 import webrtcvad
+import logging
 #from pprint import pprint
 #import warnings
 
 from thrd_party import pymumble
 import pyaudio
 
-__version__ = "0.0.9"
-PCS = pymumble.callbacks.PYMUMBLE_CLBK_SOUNDRECEIVED
+__version__ = "0.0.1"
 
-pa = pyaudio.PyAudio()
+LOG_LEVEL = logging.DEBUG
+
+logger = logging.getLogger("abot")
+logger.setLevel(logging.DEBUG)
+
+handler = logging.StreamHandler(sys.stderr)
+handler.setLevel(LOG_LEVEL)
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+
+pa = pyaudio.PyAudio( )
 
 class Status(collections.UserList):
     def __init__(self, runner_obj):
@@ -38,12 +49,10 @@ class Status(collections.UserList):
         return result
 
     def __repr__(self):
-        repr_str = ""
+        repr_str = "\n"
         for status in self:
             repr_str += "[%s] alive: %s\n" % (status.name, status.alive)
         return repr_str
-
-
 
 class Runner(collections.UserDict):
     """ TODO """
@@ -66,15 +75,15 @@ class Runner(collections.UserDict):
     def run(self):
         """ TODO """
         for name, cdict in self.items():
-            print("[run] generating process for:", name)
+            logger.debug("[run] generating process for: " + name)
             self[name]["process"] = Thread(name=name,
                                            target=cdict["func"],
                                            args=cdict["args"],
                                            kwargs=cdict["kwargs"])
-            print("[run] starting process for:", name)
+            logger.debug("[run] starting process for: " + name)
             self[name]["process"].start()
-            print("[run] ", name, "started")
-        print("[run] all done")
+            logger.info("[run] " + name + " started")
+        logger.debug("[run] all done")
         self.is_ready = True
 
     def status(self):
@@ -90,7 +99,7 @@ class Runner(collections.UserDict):
 
 class MumbleRunner(Runner):
     def __init__(self, mumble_object, args):
-        print(args)
+        logger.debug(args)
         self.mumble = mumble_object
         self.rate = pymumble.constants.PYMUMBLE_SAMPLERATE
         self.periodsize = args.periodsize
@@ -110,7 +119,7 @@ class MumbleRunner(Runner):
                                   output_device_index=args.output_device_index,
                                   frames_per_buffer=self.chunkSize)
         self.mumble.set_receive_sound(1)
-        self.mumble.callbacks.set_callback(PCS, self.sound_received_handler)
+        self.mumble.callbacks.set_callback(pymumble.callbacks.PYMUMBLE_CLBK_SOUNDRECEIVED, self.sound_received_handler)
         if args.vad >= 0:
             self.vad = webrtcvad.Vad(args.vad)
             self.numVadFrames = int(self.rate * args.vadLatency / self.chunkSize) # keep audio running for this many frames
@@ -218,14 +227,22 @@ class AudioPipe(MumbleRunner):
                         self.mumble.sound_output.add_sound(data)
         return True
 
+def handle_mumble_connect():
+    logger.info("Connected to Mumble-daemon.")
+
+def handle_mumble_disconnect():
+    logger.warning("Disconnected dfrom Mumble-daemon.")
+
 def prepare_mumble(host, user, password="", certfile=None,
                    codec_profile="audio", bandwidth=96000, channel=None):
     """Will configure the pymumble object and return it"""
 
-    abot = pymumble.Mumble(host, user, certfile=certfile, password=password)
+    abot = pymumble.Mumble(host, user, certfile=certfile, password=password, reconnect=True)
 
     abot.set_application_string("abot (%s)" % __version__)
     abot.set_codec_profile(codec_profile)
+    abot.callbacks.set_callback(pymumble.callbacks.PYMUMBLE_CLBK_CONNECTED, handle_mumble_connect)
+    abot.callbacks.set_callback(pymumble.callbacks.PYMUMBLE_CLBK_DISCONNECTED, handle_mumble_disconnect)
     abot.start()
     abot.is_ready()
     abot.set_bandwidth(bandwidth)
@@ -233,9 +250,9 @@ def prepare_mumble(host, user, password="", certfile=None,
         try:
             abot.channels.find_by_name(channel).move_in()
         except pymumble.channels.UnknownChannelError:
-            print("Tried to connect to channel:", "'" + channel + "'. ", "Got this Error:")
-            print("Available Channels:")
-            print(abot.channels)
+            logger.error("Tried to connect to channel:", "'" + channel + "'. ", "Got this Error:")
+            logger.error("Available Channels:")
+            logger.error(abot.channels)
             sys.exit(1)
     return abot
 
@@ -297,14 +314,17 @@ transferred for this many seconds in order to stabilize the connection""")
             if True or input_chn > 0 or output_chn > 0:
                 name = dev.get('name')
                 rate = dev.get('defaultSampleRate')
-                print("Index {i}: {name} (Max inputs {input_chn}, Max output {output_chn}, Default @ {rate} Hz)".format(
-                    i=i, name=name, input_chn=input_chn, output_chn=output_chn, rate=int(rate)
-
-                ))
+                message = "Index {i}: {name} (Max inputs {input_chn}, Max output {output_chn}, Default @ {rate} Hz)".format(
+                    i=i, name=name, input_chn=input_chn, output_chn=output_chn, rate=int(rate))
+                logger.info(message)
+                print(message)
         default_in = pa.get_default_input_device_info()
         default_out = pa.get_default_output_device_info()
-        print("Default input: {name}".format(name=default_in.get('name')))
-        print("Default output: {name}".format(name=default_out.get('name')))
+        message = "Default input: {name}".format(name=default_in.get('name'))
+        logger.info(message)
+        print(message)
+        message = "Default output: {name}".format(name=default_out.get('name'))
+        logger.info(message)
         sys.exit()
 
     if args.input:
@@ -314,7 +334,7 @@ transferred for this many seconds in order to stabilize the connection""")
                 args.input_device_index = i
                 break
         if args.input_device_index is None:
-            print("Device not found: {name}".format(name = args.input))
+            logger.critical("Device not found: {name}".format(name = args.input))
             sys.exit()
 
     if args.output:
@@ -324,7 +344,7 @@ transferred for this many seconds in order to stabilize the connection""")
                 args.output_device_index = i
                 break
         if args.output_device_index is None:
-            print("Device not found: {name}".format(name = args.ouput))
+            logger.critical("Device not found: {name}".format(name = args.ouput))
             sys.exit()
 
     abot = prepare_mumble(args.host, args.user, args.password, args.certfile,
@@ -337,7 +357,7 @@ transferred for this many seconds in order to stabilize the connection""")
 
     if preserve_thread:
         while True:
-            print(client.status())
+            logger.info(client.status())
             sleep(60)
 
 if __name__ == "__main__":
