@@ -148,7 +148,6 @@ class Audio(MumbleRunner):
         nullSeconds = 0.25
         nullChunks = int(self.rate * nullSeconds / self.chunkSize)
         nullCounter = -1
-        self.stream_out.start_stream()
         while True:
             if nullCounter == -1:
                 # blocking input until we get something
@@ -160,7 +159,7 @@ class Audio(MumbleRunner):
                 try:
                     data = self.received_queue.get(False).pcm
                 except queue.Empty:
-                    data = self.nullBuffer.tobytes()
+                    data = nullBuffer.tobytes()
                     nullCounter -= 1
             self.stream_out.write(data)
             if nullCounter == 0:
