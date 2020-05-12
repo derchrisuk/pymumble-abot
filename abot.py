@@ -29,8 +29,9 @@ logger.setLevel(logging.DEBUG)
 
 handler = logging.StreamHandler(sys.stderr)
 handler.setLevel(LOG_LEVEL)
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-handler.setFormatter(formatter)
+#formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+#formatter = logging.Formatter('%(name)-12s: %(levelname)-8s %(message)s')
+#handler.setFormatter(formatter)
 logger.addHandler(handler)
 
 pa = pyaudio.PyAudio( )
@@ -102,8 +103,32 @@ class MumbleRunner(Runner):
         logger.debug(args)
         self.mumble = mumble_object
         self.rate = pymumble.constants.PYMUMBLE_SAMPLERATE
-        self.periodsize = args.periodsize
-        self.chunkSize = int(self.rate * self.periodsize / 1000);
+        self.periodSize = args.periodSize
+        self.chunkSize = int(self.rate * self.periodSize / 1000);
+        if args.vad >= 0:
+            if not self.periodSize in (10,20,30):
+                if self.periodSize > 30:
+                    self.vadBlock = int(self.rate * 30 / 1000)
+                elif self.periodSize > 20:
+                    self.vadBlock = int(self.rate * 20/ 1000)
+                elif self.periodSize > 10:
+                    self.vadBlock = int(self.rate * 10 / 1000)
+                else:
+                    self.periodSize = 10
+                    self.chunkSize = int(self.rate * self.periodSize / 1000)
+                    self.vadBlock = chunkSize
+                logger.info("vad requested, adjusting period size to %i", self.periodSize)
+                logger.info("vad requested, adjusting vad-chunk to %i", self.vadBlock)
+            else:
+                self.vadBlock = self.chunkSize
+        if args.vad >= 0:
+            self.vad = webrtcvad.Vad(args.vad)            
+            self.numVadFrames = int(self.rate * args.vadLatency / self.chunkSize) # keep audio running for this many frames
+            logger.info("vad-frames: %i", self.numVadFrames)
+        else:
+            self.vad = None
+        logger.info("rate: %i", self.rate)
+        logger.info("chunk size: %i", self.chunkSize)
         self.stream_in = pa.open(input=True,
                                  start=False,
                                  channels=1,
@@ -120,11 +145,6 @@ class MumbleRunner(Runner):
                                   frames_per_buffer=self.chunkSize)
         self.mumble.set_receive_sound(1)
         self.mumble.callbacks.set_callback(pymumble.callbacks.PYMUMBLE_CLBK_SOUNDRECEIVED, self.sound_received_handler)
-        if args.vad >= 0:
-            self.vad = webrtcvad.Vad(args.vad)
-            self.numVadFrames = int(self.rate * args.vadLatency / self.chunkSize) # keep audio running for this many frames
-        else:
-            self.vad = None
         super().__init__(self._config(),
                          {"mumble-output": {"args": (), "kwargs": None},
                           "sound-input": {"args": (),"kwargs": None},
@@ -189,15 +209,17 @@ class Audio(MumbleRunner):
 
     def __mumble_output_loop(self):
         """ TODO """
-        keepRunningFrams = 0
         if self.vad:
-            keepRunningFrams = 0
+            keepRunningFrames = 0
             while True:
                 data = self.sound_input_queue.get();
-                if self.vad.is_speech(data, self.rate):
+                #
+                # VAD supports only 10/20/30 ms
+                #
+                if self.vad.is_speech(data[:2*self.vadBlock], self.rate):
                     self.mumble.sound_output.add_sound(data)
-                    keepRuningFrames = self.numVadFrames
-                elif keepRunningFrams > 0:
+                    keepRunningFrames = self.numVadFrames
+                elif keepRunningFrames > 0:
                     self.mumble.sound_output.add_sound(data)
                     keepRunningFrames -= 1
         else:
@@ -277,7 +299,7 @@ and controls the aggressiveness of the underlying webrtcvad machine where
                         help="""After speech is detected auto samples continue to be
 transferred for this many seconds in order to stabilize the connection""")
 
-    parser.add_argument("-s", "--setperiod", dest="periodsize", type=int, default=20,
+    parser.add_argument("-s", "--setperiod", dest="periodSize", type=int, default=20,
                         help="Length in ms of the sound packages send to the server. Lower values mean less delay. When using vad the length must be 10, 20 or 30ms.")
 
     parser.add_argument("-b", "--bandwidth", dest="bandwidth", type=int, default=96000,
